@@ -6,6 +6,11 @@ import { createServer as createViteServer } from 'vite';
 
 const root = process.cwd();
 const databasePath = resolve(root, 'data/pos-happy.json');
+const supabaseUrl = process.env.SUPABASE_URL || 'https://ogkyirjagdcqnwwamaif.supabase.co';
+const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+const supabaseStateTable = process.env.SUPABASE_STATE_TABLE || 'pos_happy_state';
+const useSupabase = Boolean(supabaseSecretKey);
 const sessionCookie = 'pos_happy_session';
 const sessionLifetimeMs = 24 * 60 * 60 * 1000;
 const sessions = new Map();
@@ -39,25 +44,59 @@ const permissions = {
   cocinero: { orders: true, preparation: true, preparationEdit: true, menu: false, sales: false, expenses: false },
 };
 
-function readDatabase() {
+function normalizeState(state) {
+  return {
+    ...initialState,
+    ...state,
+    menu: Array.isArray(state?.menu) ? state.menu : [],
+    orders: Array.isArray(state?.orders) ? state.orders : [],
+    expenses: Array.isArray(state?.expenses) ? state.expenses : [],
+  };
+}
+
+function readLocalDatabase() {
   if (!existsSync(databasePath)) return initialState;
   try {
-    const state = JSON.parse(readFileSync(databasePath, 'utf8'));
-    return {
-      ...initialState,
-      ...state,
-      menu: Array.isArray(state.menu) ? state.menu : [],
-      orders: Array.isArray(state.orders) ? state.orders : [],
-      expenses: Array.isArray(state.expenses) ? state.expenses : [],
-    };
+    return normalizeState(JSON.parse(readFileSync(databasePath, 'utf8')));
   } catch {
     return initialState;
   }
 }
 
-function saveDatabase(state) {
+function saveLocalDatabase(state) {
   mkdirSync(dirname(databasePath), { recursive: true });
   writeFileSync(databasePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
+async function readDatabase() {
+  if (!useSupabase) return { state: readLocalDatabase(), exists: existsSync(databasePath) };
+  const response = await fetch(`${supabaseUrl}/rest/v1/${supabaseStateTable}?id=eq.1&select=menu,orders,expenses`, {
+    headers: {
+      apikey: supabaseSecretKey,
+      Authorization: `Bearer ${supabaseSecretKey}`,
+    },
+  });
+  if (!response.ok) throw new Error(`Supabase read failed: ${response.status}`);
+  const rows = await response.json();
+  return { state: normalizeState(rows[0]), exists: rows.length > 0 };
+}
+
+async function saveDatabase(state) {
+  if (!useSupabase) {
+    saveLocalDatabase(state);
+    return;
+  }
+  const response = await fetch(`${supabaseUrl}/rest/v1/${supabaseStateTable}`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseSecretKey,
+      Authorization: `Bearer ${supabaseSecretKey}`,
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify({ id: 1, menu: state.menu, orders: state.orders, expenses: state.expenses }),
+  });
+  if (!response.ok) throw new Error(`Supabase write failed: ${response.status}`);
 }
 
 function parseCookies(request) {
@@ -80,6 +119,21 @@ function getSession(request) {
 
 function publicUser(username, user) {
   return { username, name: user.name, role: user.role, permissions: permissions[user.role] };
+}
+
+async function authenticateWithSupabase(username, password) {
+  if (!useSupabase || !supabaseAnonKey) return null;
+  const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { apikey: supabaseAnonKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: `${username}@pos-happy.local`, password }),
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  const metadata = data.user?.user_metadata || {};
+  const role = metadata.role;
+  if (!permissions[role]) return null;
+  return { role, name: metadata.name || username };
 }
 
 function sendJson(response, status, body, headers = {}) {
@@ -148,8 +202,13 @@ const server = createHttpServer(async (request, response) => {
     try {
       const { username, password, rememberMe } = await readBody(request);
       const normalizedUsername = String(username || '').trim().toLowerCase();
-      const user = users[normalizedUsername];
-      if (!user || typeof password !== 'string' || !validPassword(password, user)) {
+      const localUser = users[normalizedUsername];
+      const supabaseUser = typeof password === 'string'
+        ? await authenticateWithSupabase(normalizedUsername, password)
+        : null;
+      const user = supabaseUser || localUser;
+      const validLocalLogin = localUser && typeof password === 'string' && validPassword(password, localUser);
+      if (!user || (!supabaseUser && !validLocalLogin)) {
         sendJson(response, 401, { error: 'Usuario o contraseña incorrectos' });
         return;
       }
@@ -184,8 +243,9 @@ const server = createHttpServer(async (request, response) => {
   if (url.pathname === '/api/state' && request.method === 'GET') {
     const session = requireSession(request, response);
     if (!session) return;
-    const state = readDatabase();
-    const databaseExists = existsSync(databasePath);
+    const database = await readDatabase();
+    const state = database.state;
+    const databaseExists = database.exists;
     // Menu is included because it is needed to create an order, but expenses stay private.
     const visibleState = session.username === 'admin'
       ? state
@@ -202,8 +262,9 @@ const server = createHttpServer(async (request, response) => {
       if (!Array.isArray(state.orders) || (state.menu !== undefined && !Array.isArray(state.menu))) {
         throw new Error('Invalid database state');
       }
-      const currentState = readDatabase();
-      const isNewDatabase = !existsSync(databasePath);
+      const currentDatabase = await readDatabase();
+      const currentState = currentDatabase.state;
+      const isNewDatabase = !currentDatabase.exists;
       const ordersForRole = session.username === 'mesero'
         ? preservePreparationProgress(state.orders, currentState.orders)
         : state.orders;
@@ -218,7 +279,7 @@ const server = createHttpServer(async (request, response) => {
           orders: ordersForRole,
           expenses: isNewDatabase && Array.isArray(state.expenses) ? state.expenses : currentState.expenses,
         };
-      saveDatabase(nextState);
+      await saveDatabase(nextState);
       response.writeHead(204);
       response.end();
     } catch (error) {

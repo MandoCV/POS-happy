@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node server.js",
+    "dev": "node --env-file-if-exists=.env server.js",
     "build": "vite build",
+    "migrate:supabase": "node --env-file-if-exists=.env scripts/migrate-to-supabase.js",
     "preview": "vite preview",
-    "start": "node server.js"
+    "start": "node --env-file-if-exists=.env server.js"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

@@ -32,3 +32,19 @@ variables in Render; do not commit `.env`.
 
 The service uses `npm install && npm run build` to build and `npm start` to
 start. The server listens on Render's `PORT` environment variable.
+
+## Deploy on Netlify
+
+Netlify uses [`netlify.toml`](./netlify.toml) and the function
+[`netlify/functions/api.js`](./netlify/functions/api.js) for the `/api/*`
+routes. Configure these variables in Netlify, with the secret key marked
+private:
+
+```env
+SUPABASE_URL=https://ogkyirjagdcqnwwamaif.supabase.co
+SUPABASE_STATE_TABLE=pos_happy_state
+SUPABASE_ANON_KEY=...
+SUPABASE_SECRET_KEY=...
+```
+
+Use `npm run build` as the build command and `dist` as the publish directory.

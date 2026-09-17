@@ -22,3 +22,13 @@ file as a development fallback.
 
 The initial Auth passwords are the same as the usernames. Change them after
 the first login.
+
+## Deploy on Render
+
+Create a **Web Service** from this repository. Render can use
+[`render.yaml`](./render.yaml) automatically. Add the values for
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SECRET_KEY` as environment
+variables in Render; do not commit `.env`.
+
+The service uses `npm install && npm run build` to build and `npm start` to
+start. The server listens on Render's `PORT` environment variable.

@@ -291,7 +291,8 @@ const server = createHttpServer(async (request, response) => {
   vite.middlewares(request, response);
 });
 
-server.listen(5173, '0.0.0.0', () => {
-  console.log('POS-Happy disponible en http://localhost:5173');
-  console.log('Para la red local: http://TU-IP:5173');
+const port = Number(process.env.PORT) || 5173;
+server.listen(port, '0.0.0.0', () => {
+  console.log(`POS-Happy disponible en http://localhost:${port}`);
+  console.log(`Para la red local: http://TU-IP:${port}`);
 });
